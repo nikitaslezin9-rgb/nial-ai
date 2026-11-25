@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: nial-ai
+    runtime: node
+    plan: free
+    buildCommand: npm run check
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: GIGACHAT_CREDENTIALS
+        sync: false
+      - key: NIAL_ACCESS_PASSWORD
+        sync: false
