@@ -6,6 +6,6 @@
   "scripts": {
     "start": "node server.mjs",
     "check": "node --check server.mjs",
-    "build": "node scripts/build-netlify.mjs"
+    "build": "node scripts/build-netlify.mjs && node scripts/add-netlify-ca.mjs"
   }
 }
