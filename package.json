@@ -5,9 +5,9 @@
   "engines": { "node": "24.x" },
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check scripts/firebase-guest-build.mjs",
+    "check": "node --check server.mjs && node --check scripts/firebase-guest-build.mjs && node --check scripts/add-nial-agents.mjs",
     "test": "node --test tests/firebase-guest.test.mjs",
-    "build": "npm test && node scripts/build-netlify.mjs && node scripts/add-netlify-ca.mjs"
+    "build": "npm test && node scripts/build-netlify.mjs && node scripts/add-netlify-ca.mjs && node scripts/add-nial-agents.mjs"
   },
   "dependencies": {
     "firebase-admin": "^13.0.0"
