@@ -1,0 +1,9 @@
+# Nial Android prototype
+
+Android 8+ WebView client. This is not an offline model and not a VPN. A reachable HTTPS backend is required. No server URL or API keys are embedded. Configure a trusted backend root URL once in Settings; for the existing Basic-auth backend use its Nial access password (username nial is fixed). The password is encrypted with an AndroidKeyStore AES-GCM key; backups are disabled. A server not using Basic auth may implement its own login, which this wrapper does not automatically remember.
+
+GitHub Actions builds and lints a debug APK on pushes to android/apk touching Android files. Download the Nial-debug-APK artifact from the completed workflow run. Actions runner minutes may count against the account quota. There are no model API or paid speech tests in the workflow. Debug APKs are for testing, not Play Store publication. Runner-generated debug signing keys can differ between builds; updating may require uninstalling the old app, which deletes its local settings and site data.
+
+First launch: enter the real backend root HTTPS address, not a made-up Render hostname. Enter only the Nial access password, never GigaChat/SpeechKit credentials. Reopen the app to test persistence. Voice needs Android microphone permission and working /voice, /voice/status, /voice/stt and /voice/tts backend routes. Pressing Start on the voice page can incur provider charges; do this only with separate approval. No automatic voice test is performed.
+
+The supplied render.yaml alone does not prove that the server is deployed or supports voice. A successful APK build does not verify network reachability from Russia, voice behavior on a physical device, or backend availability. External origins are blocked; TLS errors are not bypassed. If the backend is unreachable without VPN, it must be diagnosed or moved separately. main and server code are unchanged.
