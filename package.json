@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.mjs",
     "check": "node --check server.mjs && node --check scripts/firebase-guest-build.mjs",
-    "build": "node scripts/build-netlify.mjs && node scripts/add-netlify-ca.mjs"
+    "test": "node --test tests/firebase-guest.test.mjs",
+    "build": "npm test && node scripts/build-netlify.mjs && node scripts/add-netlify-ca.mjs"
   },
   "dependencies": {
     "firebase-admin": "^13.0.0"
