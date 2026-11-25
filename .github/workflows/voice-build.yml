@@ -1,0 +1,38 @@
+name: Voice branch build
+
+on:
+  push:
+    branches:
+      - voice/speechkit
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NIAL_VOICE_ENABLED: ''
+      YANDEX_SPEECHKIT_API_KEY: ''
+      GIGACHAT_CREDENTIALS: ''
+      NIAL_ACCESS_PASSWORD: ''
+    steps:
+      - name: Check out voice branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies without lifecycle scripts
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Check source syntax
+        run: npm run check
+      - name: Run all tests and complete Netlify build
+        run: npm run build
