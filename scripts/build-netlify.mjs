@@ -37,7 +37,16 @@ globalThis.fetch = async function(input, init) {
 `;
 source = source.replace(pageLine, 'const page = Buffer.from(' + JSON.stringify(html.toString('base64')) + ', \'base64\');');
 source = source.replace(start, 'export default ' + start).replace(listen, '});\n');
-source = "if (process.env.CONTEXT === 'deploy-preview') { const preview = new URL(process.env.DEPLOY_PRIME_URL); if (preview.protocol !== 'https:' || preview.username || preview.password || preview.pathname !== '/' || preview.search || preview.hash) throw new Error('Invalid deploy preview origin'); process.env.NIAL_ORIGIN = preview.origin; process.env.RENDER_EXTERNAL_URL = preview.origin; }\nprocess.env.NIAL_ORIGIN ||= process.env.URL || 'https://steady-wisp-637e8f.netlify.app';\n" + diagnostics + source;
+let previewSetup = '';
+if (process.env.CONTEXT === 'deploy-preview') {
+  const preview = new URL(process.env.DEPLOY_PRIME_URL);
+  if (preview.protocol !== 'https:' || preview.username || preview.password || preview.pathname !== '/' || preview.search || preview.hash) {
+    throw new Error('Invalid deploy preview origin');
+  }
+  const literal = JSON.stringify(preview.origin);
+  previewSetup = 'process.env.NIAL_ORIGIN = ' + literal + ';\nprocess.env.RENDER_EXTERNAL_URL = ' + literal + ';\n';
+}
+source = previewSetup + "process.env.NIAL_ORIGIN ||= process.env.URL || 'https://steady-wisp-637e8f.netlify.app';\n" + diagnostics + source;
 source = addFirebaseGuestAuth(source);
 await mkdir('netlify/server', { recursive: true });
 await mkdir('public-nial', { recursive: true });
