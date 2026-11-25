@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { addFirebaseGuestAuth } from './firebase-guest-build.mjs';
 
 let source = await readFile('server.mjs', 'utf8');
 const html = await readFile('index.html');
@@ -37,6 +38,7 @@ globalThis.fetch = async function(input, init) {
 source = source.replace(pageLine, 'const page = Buffer.from(' + JSON.stringify(html.toString('base64')) + ', \'base64\');');
 source = source.replace(start, 'export default ' + start).replace(listen, '});\n');
 source = "process.env.NIAL_ORIGIN ||= process.env.URL || 'https://steady-wisp-637e8f.netlify.app';\n" + diagnostics + source;
+source = addFirebaseGuestAuth(source);
 await mkdir('netlify/server', { recursive: true });
 await mkdir('public-nial', { recursive: true });
 await writeFile('netlify/server/index.mjs', source);
