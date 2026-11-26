@@ -1,5 +1,7 @@
 // Applied only to the generated Netlify server, not to local server.mjs.
 const GUEST_LIMIT_PER_MINUTE = 6;
+const DAILY_TOTAL_LIMIT = 500;
+const DAILY_GUEST_LIMIT = 40;
 
 export function addFirebaseGuestAuth(source) {
   const guard = 'if (!authorized(req)) {';
@@ -10,10 +12,11 @@ export function addFirebaseGuestAuth(source) {
     throw new Error('Unexpected authorization structure; guest build stopped.');
   }
   const runtime = `
-import { initializeApp as nialInitializeApp } from 'firebase-admin/app';
+import { initializeApp as nialInitializeApp, cert as nialCert } from 'firebase-admin/app';
 import { getAuth as nialGetAuth } from 'firebase-admin/auth';
+import { getFirestore as nialGetFirestore } from 'firebase-admin/firestore';
 const nialGuestAuth = nialGetAuth(nialInitializeApp({ projectId: 'nial-ai' }, 'nial-guest-auth'));
-// Per-guest limit kept in process memory: it is not shared between serverless instances.
+// Per-minute guest limit lives in process memory and is not shared between serverless instances.
 const nialGuestCalls = new Map();
 function nialGuestLimited(uid) {
   const now = Date.now();
@@ -30,6 +33,41 @@ function nialGuestLimited(uid) {
     }
   }
   return false;
+}
+// Daily limits are shared between instances through Firestore. Any failure blocks the request.
+let nialUsageDb = null;
+function nialUsage() {
+  if (!nialUsageDb) {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (!raw) throw new Error('Usage store is not configured');
+    const app = nialInitializeApp(
+      { credential: nialCert(JSON.parse(raw)), projectId: 'nial-ai' },
+      'nial-guest-usage'
+    );
+    nialUsageDb = nialGetFirestore(app);
+  }
+  return nialUsageDb;
+}
+async function nialChargeGuest(uid) {
+  try {
+    if (!/^[A-Za-z0-9]{1,128}$/.test(uid)) return 'unavailable';
+    const db = nialUsage();
+    const day = new Date().toISOString().slice(0, 10);
+    const totalRef = db.collection('usage').doc('day-' + day);
+    const guestRef = db.collection('usage').doc('guest-' + day + '-' + uid);
+    return await db.runTransaction(async tx => {
+      const totalDoc = await tx.get(totalRef);
+      const guestDoc = await tx.get(guestRef);
+      const total = totalDoc.exists ? Number(totalDoc.data().count) || 0 : 0;
+      const guest = guestDoc.exists ? Number(guestDoc.data().count) || 0 : 0;
+      if (total >= ${DAILY_TOTAL_LIMIT} || guest >= ${DAILY_GUEST_LIMIT}) return 'limit';
+      tx.set(totalRef, { count: total + 1 });
+      tx.set(guestRef, { count: guest + 1 });
+      return 'ok';
+    });
+  } catch {
+    return 'unavailable';
+  }
 }
 async function nialAuthorizeRequest(req) {
   // Preserve the existing browser authentication without changing its scope.
@@ -53,8 +91,17 @@ async function nialAuthorizeRequest(req) {
   }
 }
 `;
+  const quota =
+    "const nialQuota = req.nialFirebaseUid && !req.nialGuestLimited\n" +
+    "      ? await nialChargeGuest(req.nialFirebaseUid) : 'ok';\n" +
+    "    if (nialQuota !== 'ok') {\n" +
+    "      return json(nialQuota === 'limit' ? 429 : 503, { error: nialQuota === 'limit'\n" +
+    "        ? 'Дневной лимит исчерпан. Попробуй завтра.'\n" +
+    "        : 'Сервис лимитов недоступен. Попробуй позже.' });\n" +
+    "    }\n" +
+    "    ";
   return runtime + '\n' + source
     .replace(guard, 'if (!(await nialAuthorizeRequest(req))) {')
-    .replace(limitCheck, 'if (req.nialGuestLimited || recentCalls.length >= 12 || activeCalls >= 3) {')
+    .replace(limitCheck, () => quota + 'if (req.nialGuestLimited || recentCalls.length >= 12 || activeCalls >= 3) {')
     .replaceAll(originCheck, '(!req.nialFirebaseUid && req.headers.origin !== origin)');
 }

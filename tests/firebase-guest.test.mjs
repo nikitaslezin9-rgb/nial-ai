@@ -5,35 +5,58 @@ import { readFile } from 'node:fs/promises';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { addFirebaseGuestAuth } from '../scripts/firebase-guest-build.mjs';
 
-// Firebase is stubbed: these tests do not validate real JWT signatures or contact APIs.
+// Firebase and Firestore are stubbed: these tests do not validate real JWT signatures or contact APIs.
 const original = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
 const password = 'x'.repeat(32);
 const basic = 'Basic ' + Buffer.from('nial:' + password).toString('base64');
 const origin = 'https://example.invalid';
+const today = new Date().toISOString().slice(0, 10);
 
-function makeHandler() {
+function fakeDb(seed, broken) {
+  const docs = new Map(Object.entries(seed).map(([path, data]) => [path, { ...data }]));
+  return {
+    docs,
+    collection(name) { return { doc(id) { return { path: name + '/' + id }; } }; },
+    async runTransaction(fn) {
+      if (broken) throw new Error('Stub store unavailable');
+      const writes = [];
+      const tx = {
+        async get(ref) { const data = docs.get(ref.path); return { exists: Boolean(data), data: () => data }; },
+        set(ref, data) { writes.push([ref.path, { ...data }]); }
+      };
+      const result = await fn(tx);
+      for (const [path, data] of writes) docs.set(path, data);
+      return result;
+    }
+  };
+}
+
+function makeHandler({ seed = {}, broken = false, configured = true } = {}) {
   let handler;
+  const db = fakeDb(seed, broken);
   const generated = addFirebaseGuestAuth(original)
     .replace(/^import .+;\r?$/gm, '')
     .replace("const page = await readFile(new URL('./index.html', import.meta.url));", 'const page = Buffer.from("TEST PAGE");');
+  const env = { GIGACHAT_CREDENTIALS: 'test-only', NIAL_ACCESS_PASSWORD: password, NIAL_ORIGIN: origin };
+  if (configured) env.FIREBASE_SERVICE_ACCOUNT = '{"stub":true}';
   const context = {
     Buffer, URL, AbortSignal, createHash, randomUUID, timingSafeEqual,
-    process: {
-      env: { GIGACHAT_CREDENTIALS: 'test-only', NIAL_ACCESS_PASSWORD: password, NIAL_ORIGIN: origin },
-      exit() { throw new Error('Unexpected process.exit'); }
-    },
+    process: { env, exit() { throw new Error('Unexpected process.exit'); } },
     console,
     http: { createServer(fn) { handler = fn; return { listen() {} }; } },
     nialInitializeApp(options, name) {
       assert.equal(options.projectId, 'nial-ai');
-      assert.equal(name, 'nial-guest-auth');
-      return {};
+      assert.ok(['nial-guest-auth', 'nial-guest-usage'].includes(name));
+      if (name === 'nial-guest-usage') assert.ok(options.credential);
+      return { name };
     },
+    nialCert(account) { return { account }; },
+    nialGetFirestore() { return db; },
     nialGetAuth() {
       return { async verifyIdToken(token) {
-        if (token === 'valid.stub.token') return { uid: 'guest-test', firebase: { sign_in_provider: 'anonymous' } };
-        if (token === 'other.stub.token') return { uid: 'guest-other', firebase: { sign_in_provider: 'anonymous' } };
-        if (token === 'member.stub.token') return { uid: 'member-test', firebase: { sign_in_provider: 'password' } };
+        if (token === 'valid.stub.token') return { uid: 'guesttest', firebase: { sign_in_provider: 'anonymous' } };
+        if (token === 'other.stub.token') return { uid: 'guestother', firebase: { sign_in_provider: 'anonymous' } };
+        if (token === 'member.stub.token') return { uid: 'membertest', firebase: { sign_in_provider: 'password' } };
         if (token === 'empty.stub.token') return { uid: '', firebase: { sign_in_provider: 'anonymous' } };
         throw new Error('Stub verifier rejected token');
       } };
@@ -42,6 +65,7 @@ function makeHandler() {
   };
   vm.runInNewContext(generated, context, { timeout: 3000 });
   assert.equal(typeof handler, 'function');
+  handler.db = db;
   return handler;
 }
 
@@ -115,13 +139,44 @@ test('guest chat still requires JSON content type', async () => {
   assert.equal((await request('POST', '/chat', { authorization: 'Bearer valid.stub.token' })).status, 415);
 });
 
-test('one guest is limited per UID without blocking another guest', async () => {
+test('one guest is limited per UID per minute without blocking another guest', async () => {
   const handler = makeHandler();
   for (let i = 0; i < 6; i++) {
     assert.equal((await request('POST', '/chat', bearer('valid.stub.token'), handler)).status, 400);
   }
   assert.equal((await request('POST', '/chat', bearer('valid.stub.token'), handler)).status, 429);
   assert.equal((await request('POST', '/chat', bearer('other.stub.token'), handler)).status, 400);
+});
+
+test('guest requests are counted in the shared daily store', async () => {
+  const handler = makeHandler();
+  await request('POST', '/chat', bearer('valid.stub.token'), handler);
+  await request('POST', '/chat', bearer('other.stub.token'), handler);
+  assert.equal(handler.db.docs.get('usage/day-' + today).count, 2);
+  assert.equal(handler.db.docs.get('usage/guest-' + today + '-guesttest').count, 1);
+});
+
+test('daily per-guest limit returns 429', async () => {
+  const handler = makeHandler({ seed: { ['usage/guest-' + today + '-guesttest']: { count: 40 } } });
+  const blocked = await request('POST', '/chat', bearer('valid.stub.token'), handler);
+  assert.equal(blocked.status, 429);
+  assert.equal((await request('POST', '/chat', bearer('other.stub.token'), handler)).status, 400);
+});
+
+test('daily total limit returns 429 for every guest', async () => {
+  const handler = makeHandler({ seed: { ['usage/day-' + today]: { count: 500 } } });
+  assert.equal((await request('POST', '/chat', bearer('other.stub.token'), handler)).status, 429);
+});
+
+test('unavailable or unconfigured usage store blocks guests', async () => {
+  assert.equal((await request('POST', '/chat', bearer('valid.stub.token'), makeHandler({ broken: true }))).status, 503);
+  assert.equal((await request('POST', '/chat', bearer('valid.stub.token'), makeHandler({ configured: false }))).status, 503);
+});
+
+test('browser users are not charged to the guest store', async () => {
+  const handler = makeHandler();
+  await request('POST', '/chat', { ...jsonHeaders, authorization: basic, origin }, handler);
+  assert.equal(handler.db.docs.size, 0);
 });
 
 test('unexpected authorization source structure stops the build', () => {
