@@ -119,71 +119,10 @@ test('empty verified UID is rejected', async () => {
   assert.equal((await request('POST', '/chat', bearer('empty.stub.token'))).status, 401);
 });
 
-test('guest tokens cannot open the page or stored images', async () => {
+test('guest tokens cannot open the page or image endpoints', async () => {
   assert.equal((await request('GET', '/', bearer('valid.stub.token'))).status, 401);
+  assert.equal((await request('POST', '/image', bearer('valid.stub.token'))).status, 401);
   assert.equal((await request('GET', '/generated/test.jpg', bearer('valid.stub.token'))).status, 401);
-});
-
-test('image endpoint rejects missing, invalid and non-anonymous credentials', async () => {
-  assert.equal((await request('POST', '/image', jsonHeaders)).status, 401);
-  assert.equal((await request('POST', '/image', bearer('invalid.stub.token'))).status, 401);
-  assert.equal((await request('POST', '/image', bearer('member.stub.token'))).status, 401);
-});
-
-test('verified anonymous image request passes auth without browser Origin', async () => {
-  const result = await request('POST', '/image', bearer('valid.stub.token'));
-  assert.equal(result.status, 400);
-  assert.match(JSON.parse(result.body).error, /формат/);
-});
-
-test('guest image request still requires JSON content type', async () => {
-  assert.equal((await request('POST', '/image', { authorization: 'Bearer valid.stub.token' })).status, 415);
-});
-
-test('guest image requests use separate daily counters', async () => {
-  const handler = makeHandler();
-  await request('POST', '/image', bearer('valid.stub.token'), handler);
-  assert.equal(handler.db.docs.get('usage/image-day-' + today).count, 1);
-  assert.equal(handler.db.docs.get('usage/image-guest-' + today + '-guesttest').count, 1);
-  assert.equal(handler.db.docs.has('usage/day-' + today), false);
-  assert.equal(handler.db.docs.has('usage/guest-' + today + '-guesttest'), false);
-});
-
-test('daily per-guest image limit is 5 and returns 429', async () => {
-  const handler = makeHandler({ seed: { ['usage/image-guest-' + today + '-guesttest']: { count: 5 } } });
-  const blocked = await request('POST', '/image', bearer('valid.stub.token'), handler);
-  assert.equal(blocked.status, 429);
-  assert.match(JSON.parse(blocked.body).error, /картинок/);
-  assert.equal((await request('POST', '/image', bearer('other.stub.token'), handler)).status, 400);
-});
-
-test('daily total image limit is 100 and returns 429 for every guest', async () => {
-  const handler = makeHandler({ seed: { ['usage/image-day-' + today]: { count: 100 } } });
-  assert.equal((await request('POST', '/image', bearer('other.stub.token'), handler)).status, 429);
-});
-
-test('chat and image daily limits do not consume each other', async () => {
-  const chatFull = makeHandler({ seed: { ['usage/guest-' + today + '-guesttest']: { count: 40 } } });
-  assert.equal((await request('POST', '/image', bearer('valid.stub.token'), chatFull)).status, 400);
-  const imageFull = makeHandler({ seed: { ['usage/image-guest-' + today + '-guesttest']: { count: 5 } } });
-  assert.equal((await request('POST', '/chat', bearer('valid.stub.token'), imageFull)).status, 400);
-});
-
-test('unavailable usage store blocks guest image requests', async () => {
-  assert.equal((await request('POST', '/image', bearer('valid.stub.token'), makeHandler({ broken: true }))).status, 503);
-});
-
-test('browser image requests still require their original Origin and are not charged', async () => {
-  const handler = makeHandler();
-  assert.equal((await request('POST', '/image', { ...jsonHeaders, authorization: basic }, handler)).status, 403);
-  await request('POST', '/image', { ...jsonHeaders, authorization: basic, origin }, handler);
-  assert.equal(handler.db.docs.size, 0);
-});
-
-test('guest image responses carry the image inline instead of using the cache', () => {
-  const generated = addFirebaseGuestAuth(original);
-  assert.match(generated, /image\.toString\('base64'\)/);
-  assert.match(generated, /req\.nialFirebaseUid\s*\? \{ id: fileId, mime: 'image\/jpeg'/);
 });
 
 test('existing browser credentials still open the page', async () => {
@@ -243,9 +182,4 @@ test('browser users are not charged to the guest store', async () => {
 test('unexpected authorization source structure stops the build', () => {
   assert.throws(() => addFirebaseGuestAuth(''), /Unexpected authorization structure/);
   assert.throws(() => addFirebaseGuestAuth(original + '\nif (!authorized(req)) { }'), /Unexpected authorization structure/);
-});
-
-test('unexpected image response structure stops the build', () => {
-  const broken = original.replace(/json\(200, \{\s*id: fileId,/, 'json(200, { fileId,');
-  assert.throws(() => addFirebaseGuestAuth(broken), /Unexpected image structure/);
 });
