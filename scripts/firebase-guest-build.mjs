@@ -2,14 +2,20 @@
 const GUEST_LIMIT_PER_MINUTE = 6;
 const DAILY_TOTAL_LIMIT = 500;
 const DAILY_GUEST_LIMIT = 40;
+const DAILY_IMAGE_TOTAL_LIMIT = 100;
+const DAILY_IMAGE_GUEST_LIMIT = 5;
 
 export function addFirebaseGuestAuth(source) {
   const guard = 'if (!authorized(req)) {';
   const originCheck = 'req.headers.origin !== origin';
   const limitCheck = 'if (recentCalls.length >= 12 || activeCalls >= 3) {';
+  const imageReply = /json\(200, \{\s*id: fileId,\s*url: `\/generated\/\$\{fileId\}\.jpg`\s*\}\);/;
   if (source.split(guard).length !== 2 || !source.includes(originCheck) ||
       source.split(limitCheck).length !== 2) {
     throw new Error('Unexpected authorization structure; guest build stopped.');
+  }
+  if (!imageReply.test(source)) {
+    throw new Error('Unexpected image structure; guest build stopped.');
   }
   const runtime = `
 import { initializeApp as nialInitializeApp, cert as nialCert } from 'firebase-admin/app';
@@ -62,22 +68,26 @@ function nialUsage() {
   }
   return nialUsageDb;
 }
-async function nialChargeGuest(uid) {
+// kind is 'chat' or 'image'; each kind has its own total and per-guest daily counters.
+async function nialChargeGuest(uid, kind) {
   let stage = 'input';
   try {
     if (!/^[A-Za-z0-9]{1,128}$/.test(uid)) return 'unavailable';
     stage = 'config';
     const db = nialUsage();
     stage = 'transaction';
+    const image = kind === 'image';
     const day = new Date().toISOString().slice(0, 10);
-    const totalRef = db.collection('usage').doc('day-' + day);
-    const guestRef = db.collection('usage').doc('guest-' + day + '-' + uid);
+    const totalRef = db.collection('usage').doc((image ? 'image-day-' : 'day-') + day);
+    const guestRef = db.collection('usage').doc((image ? 'image-guest-' : 'guest-') + day + '-' + uid);
+    const totalLimit = image ? ${DAILY_IMAGE_TOTAL_LIMIT} : ${DAILY_TOTAL_LIMIT};
+    const guestLimit = image ? ${DAILY_IMAGE_GUEST_LIMIT} : ${DAILY_GUEST_LIMIT};
     return await db.runTransaction(async tx => {
       const totalDoc = await tx.get(totalRef);
       const guestDoc = await tx.get(guestRef);
       const total = totalDoc.exists ? Number(totalDoc.data().count) || 0 : 0;
       const guest = guestDoc.exists ? Number(guestDoc.data().count) || 0 : 0;
-      if (total >= ${DAILY_TOTAL_LIMIT} || guest >= ${DAILY_GUEST_LIMIT}) return 'limit';
+      if (total >= totalLimit || guest >= guestLimit) return 'limit';
       tx.set(totalRef, { count: total + 1 });
       tx.set(guestRef, { count: guest + 1 });
       return 'ok';
@@ -96,8 +106,8 @@ async function nialChargeGuest(uid) {
 async function nialAuthorizeRequest(req) {
   // Preserve the existing browser authentication without changing its scope.
   if (authorized(req)) return true;
-  // Guest tokens authorize chat only, never the page or image endpoints.
-  if (req.method !== 'POST' || req.url !== '/chat') return false;
+  // Guest tokens authorize chat and image generation only, never the page or stored images.
+  if (req.method !== 'POST' || !['/chat', '/image'].includes(req.url)) return false;
   const header = req.headers.authorization;
   if (typeof header !== 'string' || header.length > 16384) return false;
   const match = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(header);
@@ -116,16 +126,26 @@ async function nialAuthorizeRequest(req) {
 }
 `;
   const quota =
-    "const nialQuota = req.nialFirebaseUid && !req.nialGuestLimited\n" +
-    "      ? await nialChargeGuest(req.nialFirebaseUid) : 'ok';\n" +
+    "const nialImage = req.url === '/image';\n" +
+    "    const nialQuota = req.nialFirebaseUid && !req.nialGuestLimited\n" +
+    "      ? await nialChargeGuest(req.nialFirebaseUid, nialImage ? 'image' : 'chat') : 'ok';\n" +
     "    if (nialQuota !== 'ok') {\n" +
     "      return json(nialQuota === 'limit' ? 429 : 503, { error: nialQuota === 'limit'\n" +
-    "        ? 'Дневной лимит исчерпан. Попробуй завтра.'\n" +
+    "        ? (nialImage ? 'Дневной лимит картинок исчерпан. Попробуй завтра.' : 'Дневной лимит исчерпан. Попробуй завтра.')\n" +
     "        : 'Сервис лимитов недоступен. Попробуй позже.' });\n" +
     "    }\n" +
     "    ";
+  // Guests receive the image inside the response: serverless instances do not share the image cache.
+  const guestImageReply =
+    "if (req.nialFirebaseUid && image.length > 4 * 1024 * 1024) {\n" +
+    "      throw new Error('Изображение слишком большое для передачи в приложение.');\n" +
+    "    }\n" +
+    "    json(200, req.nialFirebaseUid\n" +
+    "      ? { id: fileId, mime: 'image/jpeg', data: image.toString('base64') }\n" +
+    "      : { id: fileId, url: '/generated/' + fileId + '.jpg' });";
   return runtime + '\n' + source
     .replace(guard, 'if (!(await nialAuthorizeRequest(req))) {')
     .replace(limitCheck, () => quota + 'if (req.nialGuestLimited || recentCalls.length >= 12 || activeCalls >= 3) {')
+    .replace(imageReply, () => guestImageReply)
     .replaceAll(originCheck, '(!req.nialFirebaseUid && req.headers.origin !== origin)');
 }
