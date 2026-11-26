@@ -11,7 +11,7 @@ const password = 'x'.repeat(32);
 const basic = 'Basic ' + Buffer.from('nial:' + password).toString('base64');
 const origin = 'https://example.invalid';
 
-async function request(method, url, headers = {}) {
+function makeHandler() {
   let handler;
   const generated = addFirebaseGuestAuth(original)
     .replace(/^import .+;\r?$/gm, '')
@@ -32,6 +32,7 @@ async function request(method, url, headers = {}) {
     nialGetAuth() {
       return { async verifyIdToken(token) {
         if (token === 'valid.stub.token') return { uid: 'guest-test', firebase: { sign_in_provider: 'anonymous' } };
+        if (token === 'other.stub.token') return { uid: 'guest-other', firebase: { sign_in_provider: 'anonymous' } };
         if (token === 'member.stub.token') return { uid: 'member-test', firebase: { sign_in_provider: 'password' } };
         if (token === 'empty.stub.token') return { uid: '', firebase: { sign_in_provider: 'anonymous' } };
         throw new Error('Stub verifier rejected token');
@@ -41,18 +42,24 @@ async function request(method, url, headers = {}) {
   };
   vm.runInNewContext(generated, context, { timeout: 3000 });
   assert.equal(typeof handler, 'function');
+  return handler;
+}
+
+async function request(method, url, headers = {}, handler = makeHandler()) {
   const req = {
     method, url, headers,
     async *[Symbol.asyncIterator]() { yield Buffer.from('not-json'); }
   };
   const result = { status: null, headers: {}, body: '' };
+  const finishers = [];
   const res = {
     setHeader(name, value) { result.headers[name] = value; },
     writeHead(status, values) { result.status = status; Object.assign(result.headers, values || {}); },
-    once() {},
+    once(event, fn) { if (event === 'finish') finishers.push(fn); },
     end(value) { result.body = String(value ?? ''); }
   };
   await handler(req, res);
+  finishers.forEach(fn => fn());
   assert.notEqual(result.status, null);
   return result;
 }
@@ -106,6 +113,15 @@ test('browser chat still requires its original Origin', async () => {
 
 test('guest chat still requires JSON content type', async () => {
   assert.equal((await request('POST', '/chat', { authorization: 'Bearer valid.stub.token' })).status, 415);
+});
+
+test('one guest is limited per UID without blocking another guest', async () => {
+  const handler = makeHandler();
+  for (let i = 0; i < 6; i++) {
+    assert.equal((await request('POST', '/chat', bearer('valid.stub.token'), handler)).status, 400);
+  }
+  assert.equal((await request('POST', '/chat', bearer('valid.stub.token'), handler)).status, 429);
+  assert.equal((await request('POST', '/chat', bearer('other.stub.token'), handler)).status, 400);
 });
 
 test('unexpected authorization source structure stops the build', () => {
