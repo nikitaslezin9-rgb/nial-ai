@@ -83,15 +83,14 @@ async function nialChargeGuest(uid) {
       return 'ok';
     });
   } catch (error) {
-    // Only the stage and codes are reported: error messages may contain parts of the key.
+    // Only the stage and codes are logged: error messages may contain parts of the key.
     const detail = {
       stage: nialSafe(error?.nialStage) || stage,
       name: nialSafe(error?.name),
       code: nialSafe(error?.code)
     };
     console.error('nial usage unavailable', JSON.stringify(detail));
-    // TEMPORARY: the stage is also shown in the 503 text so it can be read without server logs.
-    return 'unavailable:' + [detail.stage, detail.name, detail.code].filter(Boolean).join(' ');
+    return 'unavailable';
   }
 }
 async function nialAuthorizeRequest(req) {
@@ -122,8 +121,7 @@ async function nialAuthorizeRequest(req) {
     "    if (nialQuota !== 'ok') {\n" +
     "      return json(nialQuota === 'limit' ? 429 : 503, { error: nialQuota === 'limit'\n" +
     "        ? 'Дневной лимит исчерпан. Попробуй завтра.'\n" +
-    "        : 'Сервис лимитов недоступен. Попробуй позже.' +\n" +
-    "          (nialQuota.startsWith('unavailable:') ? ' [' + nialQuota.slice(12) + ']' : '') });\n" +
+    "        : 'Сервис лимитов недоступен. Попробуй позже.' });\n" +
     "    }\n" +
     "    ";
   return runtime + '\n' + source
