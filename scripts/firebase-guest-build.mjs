@@ -36,12 +36,24 @@ function nialGuestLimited(uid) {
 }
 // Daily limits are shared between instances through Firestore. Any failure blocks the request.
 let nialUsageDb = null;
+function nialSafe(value) {
+  return typeof value === 'string' || typeof value === 'number' ? String(value).slice(0, 60) : '';
+}
 function nialUsage() {
   if (!nialUsageDb) {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!raw) throw new Error('Usage store is not configured');
+    if (!raw) throw Object.assign(new Error('Usage store is not configured'), { nialStage: 'env-missing' });
+    let account;
+    try {
+      account = JSON.parse(raw);
+    } catch {
+      throw Object.assign(new Error('Usage store key is not JSON'), { nialStage: 'env-not-json' });
+    }
+    if (account?.project_id !== 'nial-ai') {
+      console.error('nial usage key project mismatch', JSON.stringify({ keyProject: nialSafe(account?.project_id) }));
+    }
     const app = nialInitializeApp(
-      { credential: nialCert(JSON.parse(raw)), projectId: 'nial-ai' },
+      { credential: nialCert(account), projectId: 'nial-ai' },
       'nial-guest-usage'
     );
     nialUsageDb = nialGetFirestore(app);
@@ -49,9 +61,12 @@ function nialUsage() {
   return nialUsageDb;
 }
 async function nialChargeGuest(uid) {
+  let stage = 'input';
   try {
     if (!/^[A-Za-z0-9]{1,128}$/.test(uid)) return 'unavailable';
+    stage = 'config';
     const db = nialUsage();
+    stage = 'transaction';
     const day = new Date().toISOString().slice(0, 10);
     const totalRef = db.collection('usage').doc('day-' + day);
     const guestRef = db.collection('usage').doc('guest-' + day + '-' + uid);
@@ -65,7 +80,13 @@ async function nialChargeGuest(uid) {
       tx.set(guestRef, { count: guest + 1 });
       return 'ok';
     });
-  } catch {
+  } catch (error) {
+    // Log only the stage and codes: error messages may contain parts of the key.
+    console.error('nial usage unavailable', JSON.stringify({
+      stage: nialSafe(error?.nialStage) || stage,
+      name: nialSafe(error?.name),
+      code: nialSafe(error?.code)
+    }));
     return 'unavailable';
   }
 }
